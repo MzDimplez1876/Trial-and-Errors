@@ -4,7 +4,35 @@ import re
 from docx import Document
 import PyPDF2
 
+st.set_page_config(page_title="Compliance Dashboard", layout="wide")
 st.title("📊 Backup & Antivirus Compliance Dashboard")
+
+# -------- FUNCTIONS -------- #
+
+def extract_data(text):
+    text_lower = text.lower()
+
+    data = {
+        "Customer": "Unknown",
+        "Computers": "Unknown",
+        "Servers": "Unknown",
+        "Backup Software": "Unknown",
+        "Backup Status": "Unknown",
+        "Antivirus Version": "Unknown",
+        "Antivirus Status": "Unknown",
+        "Compliance": "🔴 Non-Compliant"
+    }
+
+    if "backup successful" in text_lower:
+        data["Backup Status"] = "Successful"
+
+    if "clean" in text_lower or "no threats" in text_lower:
+        data["Antivirus Status"] = "Clean"
+
+    if data["Backup Status"] == "Successful" and data["Antivirus Status"] == "Clean":
+        data["Compliance"] = "🟢 Compliant"
+
+    return data
 
 # -------- FILE READERS -------- #
 
@@ -23,78 +51,46 @@ def read_excel(file):
     df = pd.read_excel(file)
     return df.astype(str).to_string()
 
-# -------- EXTRACTION LOGIC -------- #
+# -------- MANUAL ENTRY -------- #
 
-def extract_data(text):
-    text_lower = text.lower()
+st.subheader("✍️ Manual Entry (Accurate Data)")
 
-    data = {
-        "Customer": "Unknown",
-        "Computers": "Unknown",
-        "Servers": "Unknown",
-        "Backup Software": "Unknown",
-        "Backup Status": "Unknown",
-        "Antivirus Version": "Unknown",
-        "Antivirus Status": "Unknown",
-        "Compliance": "Non-Compliant"
-    }
+with st.form("manual_form"):
+    customer = st.text_input("Customer Name")
+    computers = st.number_input("Number of Computers", 0)
+    servers = st.number_input("Number of Servers", 0)
+    backup = st.selectbox("Backup Status", ["Successful", "Failed"])
+    av = st.selectbox("Antivirus Status", ["Clean", "Threat Detected", "Quarantined"])
 
-    # Customer
-    match = re.search(r"(customer|client)\s*[:\-]\s*(.+)", text, re.IGNORECASE)
-    if match:
-        data["Customer"] = match.group(2).strip()
+    submitted = st.form_submit_button("Add Record")
 
-    # Computers
-    comp = re.search(r"(\d+)\s*(computers|pcs|workstations)", text_lower)
-    if comp:
-        data["Computers"] = comp.group(1)
+    manual_data = []
 
-    # Servers
-    serv = re.search(r"(\d+)\s*(servers)", text_lower)
-    if serv:
-        data["Servers"] = serv.group(1)
+    if submitted:
+        compliance = "🔴 Non-Compliant"
+        if backup == "Successful" and av == "Clean":
+            compliance = "🟢 Compliant"
+        elif backup == "Successful":
+            compliance = "🟡 Partial"
 
-    # Backup software
-    if "veeam" in text_lower:
-        data["Backup Software"] = "Veeam"
-    elif "acronis" in text_lower:
-        data["Backup Software"] = "Acronis"
-
-    # Backup status
-    if "backup successful" in text_lower:
-        data["Backup Status"] = "Successful"
-    elif "backup failed" in text_lower:
-        data["Backup Status"] = "Failed"
-
-    # Antivirus version
-    av = re.search(r"(version|ver)\s*[:\-]?\s*([\d\.]+)", text_lower)
-    if av:
-        data["Antivirus Version"] = av.group(2)
-
-    # Antivirus status
-    if "threat detected" in text_lower:
-        data["Antivirus Status"] = "Threat Detected"
-    elif "quarantined" in text_lower:
-        data["Antivirus Status"] = "Quarantined"
-    elif "clean" in text_lower or "no threats" in text_lower:
-        data["Antivirus Status"] = "Clean"
-
-    # Compliance
-    if data["Backup Status"] == "Successful" and data["Antivirus Status"] == "Clean":
-        data["Compliance"] = "Compliant"
-
-    return data
+        manual_data.append({
+            "Customer": customer,
+            "Computers": computers,
+            "Servers": servers,
+            "Backup Status": backup,
+            "Antivirus Status": av,
+            "Compliance": compliance
+        })
 
 # -------- FILE UPLOAD -------- #
 
-uploaded_files = st.file_uploader(
-    "Upload Reports (PDF, Excel, Word)", 
-    accept_multiple_files=True
-)
+st.subheader("📂 Upload Reports")
+
+uploaded_files = st.file_uploader("Upload Files", accept_multiple_files=True)
+
+results = []
 
 if uploaded_files:
-    results = []
-
     for file in uploaded_files:
         try:
             if file.name.endswith(".pdf"):
@@ -107,25 +103,41 @@ if uploaded_files:
                 continue
 
             data = extract_data(text)
-            data["File"] = file.name
+            data["Customer"] = file.name
             results.append(data)
 
-        except Exception as e:
-            results.append({
-                "File": file.name,
-                "Error": str(e)
-            })
+        except:
+            continue
 
-    df = pd.DataFrame(results)
+# Combine
+df = pd.DataFrame(results + manual_data if 'manual_data' in locals() else results)
 
-    st.subheader("📋 Consolidated Report")
+# -------- DASHBOARD -------- #
+
+if not df.empty:
+
+    st.subheader("📈 Dashboard")
+
+    col1, col2, col3 = st.columns(3)
+
+    col1.metric("Total", len(df))
+    col2.metric("Compliant", len(df[df["Compliance"] == "🟢 Compliant"]))
+    col3.metric("Non-Compliant", len(df[df["Compliance"] == "🔴 Non-Compliant"]))
+
+    st.bar_chart(df["Compliance"].value_counts())
+
+    # Filter
+    st.subheader("🔍 Filter")
+    customer_filter = st.selectbox("Select Customer", ["All"] + list(df["Customer"].unique()))
+
+    if customer_filter != "All":
+        df = df[df["Customer"] == customer_filter]
+
     st.dataframe(df)
 
     # Download
     csv = df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "📥 Download Report",
-        csv,
-        "compliance_report.csv",
-        "text/csv"
-    )
+    st.download_button("Download Report", csv, "report.csv")
+
+else:
+    st.info("Upload files or add manual records to begin.")
